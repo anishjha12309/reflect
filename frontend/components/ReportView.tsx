@@ -21,7 +21,7 @@ export default function ReportView({ report, topic, partial, streaming }: Props)
     <section className="print-root rounded-xl border border-edge bg-panel p-5">
       <div className="mb-4 flex items-center justify-between no-print">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-subtle">
-          Report {streaming && <span className="ml-2 animate-pulse text-fg">streaming…</span>}
+          Report {streaming && !hasContent && <span className="ml-2 animate-pulse text-fg">synthesizing…</span>}
         </h2>
         {hasContent && (
           <div className="flex gap-2">
