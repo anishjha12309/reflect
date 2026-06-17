@@ -1,0 +1,25 @@
+# Local dev: FastAPI backend + self-hosted SearXNG (zero search quota).
+# See CLAUDE.md §5.
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      # SearXNG reachable via the compose network name in dev.
+      SEARXNG_URL: http://searxng:8080
+    depends_on:
+      - searxng
+    volumes:
+      - ./backend:/app
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+      # JSON output is needed by core/search.py.
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
