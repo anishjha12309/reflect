@@ -129,14 +129,14 @@ export default function ResearchView() {
   return (
     <div className="space-y-6">
       <form
-        className="flex gap-2 no-print"
+        className="flex flex-col gap-2 no-print sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault();
           start(topic);
         }}
       >
         <input
-          className="flex-1 rounded-full border border-edge bg-panel px-5 py-3 text-fg placeholder:text-subtle outline-none transition-colors focus:border-accent"
+          className="w-full min-w-0 rounded-full border border-edge bg-panel px-5 py-3 text-fg placeholder:text-subtle outline-none transition-colors focus:border-accent sm:flex-1"
           placeholder="Enter a research topic…"
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
@@ -145,7 +145,7 @@ export default function ResearchView() {
         {busy ? (
           <button
             type="button"
-            className="rounded-full border border-edge px-6 py-3 text-fg transition-colors hover:bg-raised"
+            className="w-full shrink-0 rounded-full border border-edge px-6 py-3 text-fg transition-colors hover:bg-raised sm:w-auto"
             onClick={() => {
               abortRef.current?.abort();
               setStatus("idle");
@@ -155,7 +155,10 @@ export default function ResearchView() {
             Stop
           </button>
         ) : (
-          <button type="submit" className="rounded-full bg-accent px-6 py-3 font-medium text-accent-fg transition-opacity hover:opacity-90">
+          <button
+            type="submit"
+            className="w-full shrink-0 rounded-full bg-accent px-6 py-3 font-medium text-accent-fg transition-opacity hover:opacity-90 sm:w-auto"
+          >
             Research
           </button>
         )}
