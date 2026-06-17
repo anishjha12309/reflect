@@ -77,9 +77,58 @@ body {
 .report th, .report td { @apply border border-edge px-2 py-1 text-left; }
 .report th { @apply bg-panel font-semibold text-fg; }
 
-/* When printing, show only the report (PDF export path). */
+/*
+  PDF export path ("Download PDF" -> window.print()).
+  Two things must hold no matter the on-screen theme:
+    1. ONLY the finalized report card prints — not the navbar, hero, workflow /
+       capabilities marketing, footer, plan panel, activity log, or input form.
+    2. Dark mode must NOT leak into the PDF. The on-screen `.dark` tokens are
+       near-white text on near-black surfaces; on white paper that prints as
+       invisible/illegible. So we force the LIGHT token palette during print,
+       overriding `.dark`, before any color is resolved.
+*/
 @media print {
+  /* (2) Pin the light palette for both :root and .dark so report text is ink-on-paper. */
+  :root,
+  .dark {
+    --bg: 255 255 255;
+    --surface: 255 255 255;
+    --surface-2: 244 244 245;
+    --edge: 200 200 205;
+    --fg: 17 17 20;
+    --muted: 38 38 43;
+    --subtle: 90 90 100;
+    --accent: 24 24 27;
+    --accent-fg: 255 255 255;
+  }
+
+  /* (1) Hide the entire app chrome, then reveal only the report card subtree. */
+  body * { visibility: hidden; }
+  .print-root,
+  .print-root * { visibility: visible; }
+
+  /* Lift the report to the top-left of the page so it isn't offset by hidden chrome. */
+  .print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  /* Keep explicitly screen-only bits (and their reserved space) out of the layout. */
   .no-print { display: none !important; }
-  body { background: #fff; color: #000; }
-  .report a { color: #000; }
+
+  /* Collapse forced full-viewport heights so hidden flow content can't add blank pages. */
+  html,
+  body { min-height: 0 !important; height: auto !important; background: #fff !important; }
+
+  /* Readable links in print: black text, keep the URL discoverable via underline. */
+  .report a { color: #000; text-decoration: underline; }
+
+  @page { margin: 18mm; }
 }

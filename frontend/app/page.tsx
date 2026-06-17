@@ -8,7 +8,7 @@ export default function Home() {
   return (
     <main>
       {/* Palantir-style oversized hero. */}
-      <section className="mx-auto max-w-6xl px-4 pb-12 pt-16 sm:pt-24">
+      <section className="no-print mx-auto max-w-6xl px-4 pb-12 pt-16 sm:pt-24">
         <h1 className="display text-balance text-4xl font-medium text-fg sm:text-6xl lg:text-7xl">
           Open-web research,{" "}
           <span className="text-subtle">planned, parallel</span>, and self-correcting —
@@ -43,7 +43,7 @@ export default function Home() {
 
       {/* The interactive research console. */}
       <section id="start" className="scroll-mt-24 mx-auto max-w-6xl px-4 pb-16">
-        <h2 className="mb-6 display text-2xl font-semibold text-fg">Start a research run</h2>
+        <h2 className="no-print mb-6 display text-2xl font-semibold text-fg">Start a research run</h2>
         <ResearchView />
       </section>
 

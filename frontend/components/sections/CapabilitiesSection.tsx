@@ -43,7 +43,7 @@ const CAPABILITIES: { title: string; body: string; href: string; cta: string }[]
 
 export default function CapabilitiesSection() {
   return (
-    <section id="capabilities" className="scroll-mt-24 border-t border-edge py-16 sm:py-24">
+    <section id="capabilities" className="no-print scroll-mt-24 border-t border-edge py-16 sm:py-24">
       <div className="mx-auto max-w-6xl px-4">
         <p className="text-xs font-semibold uppercase tracking-wider text-subtle">Capabilities</p>
         <h2 className="display mt-3 max-w-3xl text-3xl font-medium text-fg sm:text-4xl">
