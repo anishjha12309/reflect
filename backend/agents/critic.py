@@ -18,6 +18,9 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_COVERAGE_THRESHOLD = 0.7
 MAX_ROUNDS = 1  # one extra research round beyond the initial pass
+# Cap the number of notes fed to the critic to bound prompt size and protect Groq's
+# ~6K TPM free limit from being consumed by an oversized critic call.
+CRITIC_MAX_NOTES = 60
 
 _SYSTEM = (
     "You are a rigorous research critic. Given a DRAFT report and the underlying NOTES, "
@@ -41,6 +44,9 @@ class CriticVerdict(BaseModel):
     contradictions: list[Contradiction]
     followup_questions: list[str]
     approved: bool
+    # False when the critic couldn't run at all (e.g. AllProvidersExhausted); distinguishes
+    # "critic ran and scored 0%" from "critic never ran" so the UI can be honest.
+    available: bool = True
 
 
 class _CriticLLMOutput(BaseModel):
@@ -64,7 +70,9 @@ class Critic:
         self._max_rounds = max_rounds
 
     async def review(self, draft_report: str, notes: list[Note], *, round: int) -> CriticVerdict:
-        notes_block = "\n".join(f"- ({n.source_id}) {n.claim}" for n in notes)
+        # Slice to CRITIC_MAX_NOTES before building the prompt to keep the token count
+        # manageable and protect Groq's free-tier TPM cap.
+        notes_block = "\n".join(f"- ({n.source_id}) {n.claim}" for n in notes[:CRITIC_MAX_NOTES])
         messages = [
             Message(role="system", content=_SYSTEM),
             Message(
@@ -83,9 +91,10 @@ class Critic:
             parsed = _CriticLLMOutput.model_validate_json(result.text)
         except (AllProvidersExhausted, ValidationError) as exc:
             # If the critic itself can't run, approve so the pipeline ends cleanly.
+            # available=False signals the UI that the 0.0 score is an absence, not a result.
             log.warning("critic_failed_approving", error=str(exc))
             return CriticVerdict(
-                coverage_score=0.0, contradictions=[], followup_questions=[], approved=True
+                coverage_score=0.0, contradictions=[], followup_questions=[], approved=True, available=False
             )
 
         coverage = max(0.0, min(1.0, parsed.coverage_score))

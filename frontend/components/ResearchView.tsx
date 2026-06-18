@@ -67,6 +67,12 @@ export default function ResearchView() {
           );
           if (ev.data.contradictions?.length) setContradictions(ev.data.contradictions);
           break;
+        case "critic_unavailable":
+          pushActivity("Critic unavailable — all reasoning providers were rate-limited; report finished without a quality check.", "warn");
+          break;
+        case "critic_skipped":
+          pushActivity("Critic skipped (partial report).", "warn");
+          break;
         case "quota_update":
           setQuota(ev.data);
           break;

@@ -54,9 +54,9 @@ class Orchestrator:
         summarizer: Summarizer,
         critic: Critic,
         router: LLMRouter,
-        max_concurrency: int = 4,
+        max_concurrency: int = 3,
         search_k: int = 5,
-        read_k: int = 3,
+        read_k: int = 2,
         max_reformulations: int = 1,
         max_rounds: int = MAX_ROUNDS,
         synth_token_budget: int = 24_000,
@@ -318,18 +318,26 @@ class Orchestrator:
         if state.partial:
             return {"events": [*state.events, Event(type="critic_skipped", data={"reason": "partial"})]}
         verdict = await self._critic.review(state.draft_report, state.notes, round=state.round)
-        events = [
-            *state.events,
-            Event(
-                type="critic_verdict",
-                data={
-                    "coverage": verdict.coverage_score,
-                    "approved": verdict.approved,
-                    "contradictions": [c.model_dump() for c in verdict.contradictions],
-                    "followups": verdict.followup_questions,
-                },
-            ),
-        ]
+        if not verdict.available:
+            # Providers were exhausted; emit a distinct event so the UI doesn't show
+            # "coverage 0% — approved" as if the critic actually ran.
+            events = [
+                *state.events,
+                Event(type="critic_unavailable", data={"reason": "providers_exhausted"}),
+            ]
+        else:
+            events = [
+                *state.events,
+                Event(
+                    type="critic_verdict",
+                    data={
+                        "coverage": verdict.coverage_score,
+                        "approved": verdict.approved,
+                        "contradictions": [c.model_dump() for c in verdict.contradictions],
+                        "followups": verdict.followup_questions,
+                    },
+                ),
+            ]
         return {"critic_feedback": verdict, "events": events}
 
     def _route_after_critic(self, state: ResearchState) -> str:

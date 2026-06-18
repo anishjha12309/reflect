@@ -39,6 +39,7 @@ export type ServerEvent =
   | { event: "draft_ready"; data: { partial: boolean } }
   | { event: "critic_verdict"; data: { coverage: number; approved: boolean; contradictions: Contradiction[]; followups: string[] } }
   | { event: "critic_skipped"; data: { reason: string } }
+  | { event: "critic_unavailable"; data: { reason: string } }
   | { event: "quota_update"; data: QuotaProvider[] }
   | { event: "report_chunk"; data: { text: string } }
   | { event: "done"; data: { partial: boolean } }

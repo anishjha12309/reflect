@@ -65,3 +65,10 @@ async def test_critic_failure_approves_to_end_pipeline() -> None:
     router = FakeRouter(["garbage not json"])
     verdict = await Critic(router).review("draft", _NOTES, round=0)
     assert verdict.approved is True
+    assert verdict.available is False
+
+
+async def test_successful_critic_run_marks_available() -> None:
+    router = FakeRouter([_verdict_json(0.95, [])])
+    verdict = await Critic(router).review("draft", _NOTES, round=0)
+    assert verdict.available is True

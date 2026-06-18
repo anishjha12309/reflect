@@ -181,3 +181,24 @@ async def test_fan_out_respects_semaphore_cap() -> None:
 
     assert tracker.max_seen <= 4  # never exceeded the cap
     assert tracker.max_seen > 1  # but did run in parallel
+
+
+# --- critic unavailable (providers exhausted) -----------------------------------
+
+
+async def test_critic_unavailable_emits_distinct_event() -> None:
+    # When the critic can't run (available=False), the orchestrator must emit
+    # "critic_unavailable" rather than "critic_verdict", so the UI is not misled into
+    # showing "coverage 0% — approved" as if the critic actually scored the report.
+    unavailable_verdict = CriticVerdict(
+        coverage_score=0.0, contradictions=[], followup_questions=[], approved=True, available=False
+    )
+    critic = ScriptedCritic({0: unavailable_verdict})
+    state = await _orchestrator(critic=critic).run("topic")
+
+    event_types = [e.type for e in state.events]
+    assert "critic_unavailable" in event_types
+    assert "critic_verdict" not in event_types
+    # Pipeline still ends cleanly — partial is False, report is present.
+    assert state.partial is False
+    assert state.final_report
