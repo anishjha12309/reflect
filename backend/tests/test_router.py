@@ -147,27 +147,29 @@ def test_pick_includes_cerebras_for_small_context() -> None:
 
 
 def test_pick_excludes_cerebras_when_context_overflows() -> None:
+    # "short" policy is now ("cerebras", "openrouter") — groq is reserved for "reasoning".
     led = QuotaLedger(":memory:")
     cerebras = FakeProvider(_cap("cerebras", max_context=8192, tags=("short",)), [_result("cerebras")])
-    groq = FakeProvider(_cap("groq", tags=("reasoning",)), [_result("groq")])
-    router = LLMRouter({"cerebras": cerebras, "groq": groq}, led)
+    openrouter = FakeProvider(_cap("openrouter"), [_result("openrouter")])
+    router = LLMRouter({"cerebras": cerebras, "openrouter": openrouter}, led)
 
     chain = router.pick("short", needed_context_tokens=9000)
     assert "cerebras" not in chain
-    assert chain == ["groq"]
+    assert chain == ["openrouter"]
 
 
 async def test_complete_reroutes_oversize_prompt_past_cerebras() -> None:
+    # "short" policy is now ("cerebras", "openrouter") — groq is reserved for "reasoning".
     led = QuotaLedger(":memory:")
     cerebras = FakeProvider(_cap("cerebras", max_context=8192, tags=("short",)), [_result("cerebras")])
-    groq = FakeProvider(_cap("groq", tags=("reasoning",)), [_result("groq")])
-    router = LLMRouter({"cerebras": cerebras, "groq": groq}, led, sleep=FakeSleep())
+    openrouter = FakeProvider(_cap("openrouter"), [_result("openrouter")])
+    router = LLMRouter({"cerebras": cerebras, "openrouter": openrouter}, led, sleep=FakeSleep())
 
     # ~9.2K-token prompt by the 4-chars/token estimate → exceeds Cerebras' 8192 cap
     big = [Message(role="user", content="x" * (8192 * 4 + 4000))]
     result = await router.complete(big, task_type="short", max_tokens=64)
 
-    assert result.provider == "groq"
+    assert result.provider == "openrouter"
     assert cerebras.calls == 0  # never even attempted
 
 

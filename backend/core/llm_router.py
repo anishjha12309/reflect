@@ -32,8 +32,13 @@ log = structlog.get_logger(__name__)
 
 # Ordered fallback policy per task type (CLAUDE.md §4). The first viable provider
 # (passing context / breaker / quota filters) is tried first, then the rest in order.
+#
+# NOTE: Groq is intentionally absent from "short" so that heavy summarize fan-outs
+# (which run many "short" tasks in parallel) cannot trip Groq's circuit breaker and
+# starve the critic + planner, whose "reasoning" chain depends on Groq as its primary.
+# CLAUDE.md §4: "Groq for reasoning."
 DEFAULT_POLICY: dict[TaskType, tuple[str, ...]] = {
-    "short": ("cerebras", "groq", "openrouter"),
+    "short": ("cerebras", "openrouter"),
     "reasoning": ("groq", "openrouter", "gemini"),
     "long_synthesis": ("gemini", "openrouter"),
     "overflow": ("openrouter", "groq"),
