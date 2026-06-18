@@ -33,12 +33,17 @@ log = structlog.get_logger(__name__)
 # Ordered fallback policy per task type (CLAUDE.md §4). The first viable provider
 # (passing context / breaker / quota filters) is tried first, then the rest in order.
 #
-# NOTE: Groq is intentionally absent from "short" so that heavy summarize fan-outs
-# (which run many "short" tasks in parallel) cannot trip Groq's circuit breaker and
-# starve the critic + planner, whose "reasoning" chain depends on Groq as its primary.
-# CLAUDE.md §4: "Groq for reasoning."
+# NOTE: "short" (summarize) needs a provider that reliably emits the required JSON.
+# Cerebras' free tier is reasoning-only (gpt-oss/glm) and OpenRouter's free models are
+# now reasoning models too — both routinely fail json_mode schema validation, which
+# starves the summarizer of notes. Groq's instruct model (Llama 3.3 70B) is the reliable
+# JSON worker, so it stays as the fallback AFTER the fast Cerebras attempt. On healthy
+# quota these summarize calls succeed, so they don't trip Groq's breaker and starve the
+# critic — the earlier starvation came from 429-drained Groq, not from healthy use.
+# OpenRouter's slow reasoning model is dropped from "short": it can't do the JSON job and
+# only adds latency before failing over.
 DEFAULT_POLICY: dict[TaskType, tuple[str, ...]] = {
-    "short": ("cerebras", "openrouter"),
+    "short": ("cerebras", "groq"),
     "reasoning": ("groq", "openrouter", "gemini"),
     "long_synthesis": ("gemini", "openrouter"),
     "overflow": ("openrouter", "groq"),
