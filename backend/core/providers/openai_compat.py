@@ -6,7 +6,7 @@ capabilities (CLAUDE.md §4).
 """
 from __future__ import annotations
 
-from typing import Any, ClassVar, Sequence
+from typing import Any, ClassVar, Mapping, Sequence
 
 import httpx
 
@@ -27,6 +27,9 @@ _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 class OpenAICompatProvider(LLMProvider):
     base_url: ClassVar[str]
     model: ClassVar[str]
+    # Subclasses may override to inject extra headers (e.g. OpenRouter ranking headers).
+    # Default is empty so Cerebras/Groq behaviour is unchanged.
+    extra_headers: ClassVar[Mapping[str, str]] = {}
 
     def __init__(
         self,
@@ -54,10 +57,14 @@ class OpenAICompatProvider(LLMProvider):
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
+        headers: dict[str, str] = {
+            "Authorization": f"Bearer {self._api_key}",
+            **self.extra_headers,
+        }
         try:
             resp = await self._client.post(
                 f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers=headers,
                 json=payload,
             )
         except httpx.HTTPError as exc:  # timeouts, connection errors → recoverable
@@ -95,5 +102,10 @@ def _raise_for_status(provider: str, resp: httpx.Response) -> None:
     if resp.status_code >= 500:
         raise ServerError(f"{provider}: {resp.status_code} server error")
     if resp.status_code >= 400:
-        # 4xx other than 429 (bad key, bad request) — still recoverable via failover.
-        raise ProviderError(f"{provider}: {resp.status_code} client error")
+        # 4xx other than 429 (bad key, bad model id, bad request) — still recoverable
+        # via failover. Include truncated body so a stale/unknown model id is diagnosable
+        # from logs without having to re-run with debug mode.
+        body_snippet = resp.text[:300]
+        raise ProviderError(
+            f"{provider}: {resp.status_code} client error — {body_snippet}"
+        )
