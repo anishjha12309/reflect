@@ -26,7 +26,8 @@ const PROVIDER_VARS: Record<string, { var: string; fallback: string }> = {
   cerebras: { var: "--chart-1", fallback: "37 99 235" },
   groq: { var: "--chart-2", fallback: "217 119 6" },
   gemini: { var: "--chart-3", fallback: "124 58 237" },
-  openrouter: { var: "--chart-4", fallback: "94 94 94" },
+  sambanova: { var: "--chart-4", fallback: "234 88 12" },
+  mistral: { var: "--chart-5", fallback: "22 163 74" },
 };
 
 // Resolve a CSS custom property ("r g b" triplet) to an rgb() string, browser-side.
@@ -41,7 +42,7 @@ export function colorFor(provider: string): string {
   return p ? cssVar(p.var, p.fallback) : cssVar("--muted", "148 163 184");
 }
 
-export const PROVIDERS = ["cerebras", "groq", "gemini", "openrouter"] as const;
+export const PROVIDERS = ["cerebras", "groq", "gemini", "sambanova", "mistral"] as const;
 
 export type ChartRow = { t: number } & Partial<Record<string, number>>;
 

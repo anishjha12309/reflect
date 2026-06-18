@@ -57,7 +57,8 @@ const PROVIDERS = [
   ["Cerebras", "Short, high-volume tasks · 8K context cap"],
   ["Groq", "Mid reasoning · planner & critic"],
   ["Gemini", "Final long-context synthesis · up to 1M"],
-  ["OpenRouter", "Breadth / last-resort overflow"],
+  ["SambaNova", "Reliable-JSON fallback (summarize / reasoning)"],
+  ["Mistral", "Reasoning / overflow fallback"],
 ];
 
 export default function ArchitecturePage() {
@@ -121,8 +122,8 @@ export default function ArchitecturePage() {
 
         <Arrow />
 
-        <Layer label="Providers" title="Four no-card free LLM tiers">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Layer label="Providers" title="Five no-card free LLM tiers">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {PROVIDERS.map(([t, s]) => (
               <Node key={t} title={t} sub={s} />
             ))}

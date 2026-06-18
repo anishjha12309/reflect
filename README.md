@@ -44,7 +44,7 @@ The research-assistant space is saturated with "LangGraph + Tavily + a for-loop"
 
 Every LLM call goes through `core/llm_router.py` — never directly to a provider SDK. The router:
 
-- **Routes by task type + context window + live quota.** Short query-generation tasks go to Cerebras (fastest throughput). Reasoning tasks (planner, critic) go to Groq. Long-context synthesis goes exclusively to Gemini. OpenRouter is the overflow fallback. The routing table is re-evaluated on every call so a provider that just recovered from a breaker trip is immediately eligible again.
+- **Routes by task type + context window + live quota.** Short query-generation tasks go to Cerebras (fastest throughput). Reasoning tasks (planner, critic) go to Groq. Long-context synthesis goes exclusively to Gemini. SambaNova and Mistral back up the primaries and serve as the overflow fallback chain. The routing table is re-evaluated on every call so a provider that just recovered from a breaker trip is immediately eligible again.
 - **Pre-flight context guard.** Token count is estimated before any call (~4 chars/token heuristic). Prompts that exceed a provider's `max_context` are silently rerouted. The API is never trusted to catch overflow.
 - **429 / 5xx failover with exponential backoff.** On a recoverable error the router tries the next viable provider in the policy chain. Only when the entire chain has been attempted does it back off and retry, up to a capped `max_retries` (default 3).
 - **Per-provider circuit breaker** (closed → open → half-open). Opens after N consecutive failures (default 3). Enters half-open after a cooldown window (default 30 seconds). Recovers on a successful probe. Keeps flaky providers out of the hot path without permanently dropping them.
@@ -81,7 +81,7 @@ If the coverage score is below threshold (default 0.7) and the current round is 
 
 | Feature | Detail |
 |---|---|
-| Multi-provider LLM gateway | Cerebras, Groq, Gemini, OpenRouter — all free tiers, uniform interface |
+| Multi-provider LLM gateway | Cerebras, Groq, Gemini, SambaNova, Mistral — all free tiers, uniform interface |
 | Circuit breaker per provider | Closed → Open → Half-open, tunable threshold and cooldown |
 | RPM token-bucket throttle | Self-paces to stay under free-tier RPM limits; fails over instead of 429-ing |
 | Pre-flight context overflow guard | Never sends oversized prompts; reroutes before the API call |
@@ -121,11 +121,11 @@ If the coverage score is below threshold (default 0.7) and the current round is 
                                    core/llm_router.py
                           (task routing · 429 failover · circuit breaker · quota ledger)
                                           │
-                          ┌───────────────┼───────────────┬──────────────┐
-                          ▼               ▼               ▼              ▼
-                       Cerebras         Groq           Gemini        OpenRouter
-                      (short/fast)   (mid reasoning)  (long ctx     (breadth /
-                                                       synthesis)    last resort)
+                          ┌──────────────┬───────────────┼──────────────┬──────────────┐
+                          ▼              ▼               ▼              ▼              ▼
+                       Cerebras        Groq           Gemini        SambaNova      Mistral
+                      (short/fast)  (mid reasoning)  (long ctx    (JSON fallback) (overflow /
+                                                      synthesis)                  JSON fallback)
 ```
 
 ### LangGraph state graph
@@ -216,16 +216,17 @@ All providers use no-card free tiers. Verified June 2026 — re-verify before re
 | **Cerebras** | `gpt-oss-120b` | 1M tokens/day, 30 RPM | 65,536 | `short` | Fastest throughput. Used for query-gen and per-source summarization. |
 | **Groq** | `llama-3.3-70b-versatile` | 14,400 req/day, 30 RPM, ~6K TPM | 32,768 | `reasoning` | Used for planner and critic. OpenAI-API-compatible. |
 | **Gemini (AI Studio)** | `gemini-2.5-flash` | 250 RPD, 250K TPM | 1,000,000 | `long_synthesis` | Reserved exclusively for final synthesis. Lowest RPD. Uses native REST API (not OpenAI-compatible). |
-| **OpenRouter** | `meta-llama/llama-3.3-70b-instruct:free` | ~20 RPM, ~50 RPD | 131,072 | `overflow` | Last-resort overflow. OpenAI-API-compatible. |
+| **SambaNova** | `Meta-Llama-3.3-70B-Instruct` | ~20 RPM, free no-card | 16,384 | `short` / `reasoning` | Reliable JSON fallback for summarize + reasoning. OpenAI-API-compatible. |
+| **Mistral** | `mistral-small-latest` | ~30 RPM, free no-card | 32,768 | `short` / `reasoning` / `overflow` | Reliable JSON fallback; overflow chain. OpenAI-API-compatible. |
 
 **Routing policy by task type:**
 
 | Task type | Ordered fallback chain |
 |---|---|
-| `short` | Cerebras → Groq → OpenRouter |
-| `reasoning` | Groq → OpenRouter → Gemini |
-| `long_synthesis` | Gemini → OpenRouter |
-| `overflow` | OpenRouter → Groq |
+| `short` | Cerebras → SambaNova → Mistral → Groq |
+| `reasoning` | Groq → SambaNova → Mistral → Gemini |
+| `long_synthesis` | Gemini → Mistral → SambaNova |
+| `overflow` | Mistral → SambaNova → Groq |
 
 Providers are excluded from the chain if: their `max_context` is smaller than the estimated prompt tokens, their circuit breaker is open, or their daily quota is exhausted per the ledger.
 
@@ -266,7 +267,7 @@ The search facade tries providers in order. On any `SearchProviderError` (includ
 | `python-dotenv` | >= 1.0 | `.env` loading in standalone dev mode |
 | `pytest` + `pytest-asyncio` | latest | Test framework; `asyncio_mode = auto` |
 
-No provider SDK (Cerebras, Groq, Gemini, OpenRouter) is used directly. Every LLM and embedding call is raw `httpx` through the uniform `LLMProvider` interface.
+No provider SDK (Cerebras, Groq, Gemini, SambaNova, Mistral) is used directly. Every LLM and embedding call is raw `httpx` through the uniform `LLMProvider` interface.
 
 ### Frontend
 
@@ -308,11 +309,12 @@ reflect/
 │   │   ├── search.py              # SearchFacade: Tavily -> Serper -> SearXNG fallback chain
 │   │   └── providers/
 │   │       ├── base.py            # LLMProvider ABC, Message, LLMResult, ProviderCapabilities, errors
-│   │       ├── openai_compat.py   # Shared OpenAI-API-compatible base (Cerebras, Groq, OpenRouter)
+│   │       ├── openai_compat.py   # Shared OpenAI-API-compatible base (Cerebras, Groq, SambaNova, Mistral)
 │   │       ├── cerebras.py        # CerebrasProvider (gpt-oss-120b)
 │   │       ├── groq.py            # GroqProvider (llama-3.3-70b-versatile)
 │   │       ├── gemini.py          # GeminiProvider (gemini-2.5-flash, 1M ctx, native REST)
-│   │       └── openrouter.py      # OpenRouterProvider (llama-3.3-70b-instruct:free)
+│   │       ├── sambanova.py       # SambaNovaProvider (Meta-Llama-3.3-70B-Instruct)
+│   │       └── mistral.py         # MistralProvider (mistral-small-latest)
 │   │
 │   ├── agents/
 │   │   ├── planner.py             # Planner: topic -> ResearchPlan + DAG validation
@@ -434,7 +436,8 @@ All tests mock external HTTP — no API keys required. The suite runs with `asyn
 | `CEREBRAS_API_KEY` | At least one LLM key required | Cerebras API key (free tier, no card) |
 | `GROQ_API_KEY` | At least one LLM key required | Groq API key (free tier, no card) |
 | `GEMINI_API_KEY` | At least one LLM key required | Google AI Studio key. Also used for cache embeddings. |
-| `OPENROUTER_API_KEY` | At least one LLM key required | OpenRouter key (free `:free` models) |
+| `SAMBANOVA_API_KEY` | At least one LLM key required | SambaNova key (free tier, no card) |
+| `MISTRAL_API_KEY` | At least one LLM key required | Mistral key (free tier, no card) |
 | `TAVILY_API_KEY` | At least one search key required | Tavily (1,000 credits/month free) |
 | `SERPER_API_KEY` | Optional | Serper (~2,500 free queries) |
 | `SEARXNG_URL` | Optional | Self-hosted SearXNG base URL. Defaults to `http://localhost:8080`. Set automatically by `docker compose up`. |
@@ -503,7 +506,7 @@ This is where Reflect earns its keep. Every failure mode below is handled in pro
 - **Daily quota exhausted** — the ledger's `is_exhausted()` gate excludes the provider from `pick()` for the rest of the day. The frontend quota strip shows which providers are tapped out.
 - **Context overflow (e.g. long prompt to Cerebras)** — the router's `pick()` filters out any provider whose `max_context` is smaller than the estimated prompt + completion tokens. The next provider in the chain is used without ever making the call.
 - **Malformed or truncated JSON** — on a Pydantic schema validation failure, the router resends the same messages with a "return JSON only" reminder to the same provider. If the second attempt also fails, the provider is treated as failed and the chain moves on.
-- **Provider returns null content** — `OpenAICompatProvider._parse` raises `MalformedResponseError` on null content (observed with some OpenRouter reasoning models), triggering the same failover path.
+- **Provider returns null content** — `OpenAICompatProvider._parse` raises `MalformedResponseError` on null content (observed with some reasoning models), triggering the same failover path.
 
 </details>
 

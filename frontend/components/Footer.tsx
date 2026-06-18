@@ -21,7 +21,8 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
       { label: "Cerebras", href: "https://cerebras.ai", external: true },
       { label: "Groq", href: "https://groq.com", external: true },
       { label: "Gemini (AI Studio)", href: "https://ai.google.dev", external: true },
-      { label: "OpenRouter", href: "https://openrouter.ai", external: true },
+      { label: "SambaNova", href: "https://sambanova.ai", external: true },
+      { label: "Mistral", href: "https://mistral.ai", external: true },
     ],
   },
   {
