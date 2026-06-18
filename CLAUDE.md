@@ -84,11 +84,11 @@ SSE-streaming frontend pattern and the keep-alive deployment trick.
                                    core/llm_router.py
                                    (provider select + 429 failover + quota meter)
                                           │
-                          ┌───────────────┼───────────────┬──────────────┐
-                          ▼               ▼               ▼              ▼
-                       Cerebras         Groq           Gemini        OpenRouter
-                      (short/fast)   (mid reasoning)  (long ctx     (breadth /
-                                                       synthesis)    last resort)
+                          ┌──────────────┬───────────────┼──────────────┬──────────────┐
+                          ▼              ▼               ▼              ▼              ▼
+                       Cerebras        Groq           Gemini        SambaNova      Mistral
+                      (short/fast)  (mid reasoning)  (long ctx    (JSON fallback) (overflow /
+                                                      synthesis)                  JSON fallback)
 ```
 
 ### Agent responsibilities
@@ -122,12 +122,13 @@ State is serializable; no live objects (sockets, clients) stored in state.
 | **Cerebras**           | 1M tokens/day, 30 RPM                 | **8,192 cap on free tier** | short, high-volume tasks: query-gen, per-source summarize | Fastest throughput. The 8K context cap is the key edge case — never send long synthesis here. |
 | **Groq**               | 14,400 req/day, 30 RPM, ~6K TPM       | model-dependent            | mid reasoning, planner, critic                            | Open-weight only (Llama 3.3 70B, GPT-OSS 120B, Qwen3). OpenAI-compatible.                     |
 | **Gemini (AI Studio)** | Flash 250 RPD / Pro 100 RPD, 250K TPM | **up to 1M**               | **final long-context synthesis** of many sources          | Lowest RPD — reserve for synthesis, not sub-tasks.                                            |
-| **OpenRouter**         | 20 RPM, ~50 RPD (`:free` models)      | model-dependent            | breadth / last-resort fallback                            | DeepSeek/Qwen/Llama `:free` IDs. OpenAI-compatible base URL.                                  |
+| **SambaNova**          | free no-card tier, 20 RPM             | 16,384                     | reliable-JSON fallback for summarize + reasoning          | Llama-3.3-70B-Instruct; verified clean JSON output. OpenAI-compatible.                        |
+| **Mistral**            | free no-card tier, 30 RPM             | 32,768                     | reasoning / overflow fallback                             | mistral-small-latest; verified clean JSON output. OpenAI-compatible.                          |
 
 > Router policy: route by (task_type, needed_context, remaining_quota). Cerebras for short
-> bursts, Groq for reasoning, Gemini ONLY for final synthesis, OpenRouter as overflow.
-> All four are OpenAI-API-compatible except Gemini (use its REST/SDK) — wrap each behind a
-> uniform `LLMProvider` interface.
+> bursts, Groq for reasoning, Gemini ONLY for final synthesis, SambaNova/Mistral as
+> reliable-JSON fallbacks and overflow. All five are OpenAI-API-compatible except Gemini
+> (use its REST/SDK) — wrap each behind a uniform `LLMProvider` interface.
 
 ### Search / retrieval (no-card free tiers)
 
@@ -187,7 +188,7 @@ reflect/
 │   ├── app.py                     # FastAPI entry; /research (SSE), /health
 │   ├── core/
 │   │   ├── llm_router.py          # ★ provider select + 429 failover + circuit breaker
-│   │   ├── providers/             # cerebras.py groq.py gemini.py openrouter.py (uniform iface)
+│   │   ├── providers/             # cerebras.py groq.py gemini.py sambanova.py mistral.py (uniform iface)
 │   │   ├── quota.py               # token/req ledger (sqlite in /tmp)
 │   │   ├── cache.py               # semantic sub-query dedup cache
 │   │   └── search.py              # tavily→serper→searxng fallback chain

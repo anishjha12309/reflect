@@ -99,7 +99,7 @@ def test_metrics_returns_provider_snapshot_and_series(tmp_path, monkeypatch) -> 
     data = TestClient(app).get("/metrics").json()
 
     names = {p["provider"] for p in data["providers"]}
-    assert {"cerebras", "groq", "gemini", "openrouter"} <= names
+    assert {"cerebras", "groq", "gemini", "sambanova", "mistral"} <= names
     groq = next(p for p in data["providers"] if p["provider"] == "groq")
     assert groq["tokens_used"] == 150
     assert len(data["series"]) == 2

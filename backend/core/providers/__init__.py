@@ -19,7 +19,8 @@ from .base import (
 from .cerebras import CerebrasProvider
 from .gemini import GeminiProvider
 from .groq import GroqProvider
-from .openrouter import OpenRouterProvider
+from .mistral import MistralProvider
+from .sambanova import SambaNovaProvider
 
 
 def all_capabilities() -> list[ProviderCapabilities]:
@@ -31,7 +32,8 @@ def all_capabilities() -> list[ProviderCapabilities]:
         CerebrasProvider.capabilities,
         GroqProvider.capabilities,
         GeminiProvider.capabilities,
-        OpenRouterProvider.capabilities,
+        SambaNovaProvider.capabilities,
+        MistralProvider.capabilities,
     ]
 
 __all__ = [
@@ -45,10 +47,11 @@ __all__ = [
     "LLMResult",
     "MalformedResponseError",
     "Message",
-    "OpenRouterProvider",
+    "MistralProvider",
     "ProviderCapabilities",
     "ProviderError",
     "RateLimitError",
+    "SambaNovaProvider",
     "ServerError",
     "TaskType",
     "TokenUsage",

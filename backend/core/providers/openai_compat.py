@@ -1,12 +1,12 @@
-"""Shared base for OpenAI-API-compatible providers (Cerebras/Groq/OpenRouter).
+"""Shared base for OpenAI-API-compatible providers (Cerebras/Groq/SambaNova/Mistral).
 
-All three speak the same `POST {base}/chat/completions` shape, so the HTTP and
+All four speak the same `POST {base}/chat/completions` shape, so the HTTP and
 parsing logic lives here once; concrete classes only set base_url, model, and
 capabilities (CLAUDE.md §4).
 """
 from __future__ import annotations
 
-from typing import Any, ClassVar, Mapping, Sequence
+from typing import Any, ClassVar, Sequence
 
 import httpx
 
@@ -27,9 +27,6 @@ _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 class OpenAICompatProvider(LLMProvider):
     base_url: ClassVar[str]
     model: ClassVar[str]
-    # Subclasses may override to inject extra headers (e.g. OpenRouter ranking headers).
-    # Default is empty so Cerebras/Groq behaviour is unchanged.
-    extra_headers: ClassVar[Mapping[str, str]] = {}
 
     def __init__(
         self,
@@ -57,14 +54,10 @@ class OpenAICompatProvider(LLMProvider):
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        headers: dict[str, str] = {
-            "Authorization": f"Bearer {self._api_key}",
-            **self.extra_headers,
-        }
         try:
             resp = await self._client.post(
                 f"{self.base_url}/chat/completions",
-                headers=headers,
+                headers={"Authorization": f"Bearer {self._api_key}"},
                 json=payload,
             )
         except httpx.HTTPError as exc:  # timeouts, connection errors → recoverable

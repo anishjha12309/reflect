@@ -26,11 +26,11 @@ def test_failed_call_counts_request_but_not_tokens() -> None:
 
 
 def test_is_exhausted_by_rpd() -> None:
-    cap = _cap("openrouter", rpd=2, tags=("overflow",))
+    cap = _cap("mistral", rpd=2, tags=("overflow",))
     led = QuotaLedger(":memory:")
     assert not led.is_exhausted(cap)
-    led.record("openrouter", "overflow", 1, 1, success=True)
-    led.record("openrouter", "overflow", 1, 1, success=False)
+    led.record("mistral", "overflow", 1, 1, success=True)
+    led.record("mistral", "overflow", 1, 1, success=False)
     assert led.is_exhausted(cap)
 
 

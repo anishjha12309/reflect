@@ -1,6 +1,6 @@
 """Uniform LLM provider interface + shared types and errors.
 
-Every concrete provider (Cerebras/Groq/OpenRouter/Gemini) implements `LLMProvider`
+Every concrete provider (Cerebras/Groq/SambaNova/Mistral/Gemini) implements `LLMProvider`
 so the router can treat them interchangeably. No provider SDK is used directly —
 all I/O is raw async httpx (CLAUDE.md §6, §8).
 """

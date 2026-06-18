@@ -39,7 +39,8 @@ the rest. Add a search key too, or rely on the SearXNG fallback.
 | `CEREBRAS_API_KEY`   | Cerebras    | short / high-volume tasks              |
 | `GROQ_API_KEY`       | Groq        | reasoning (planner, critic)            |
 | `GEMINI_API_KEY`     | Gemini      | long-context synthesis + embeddings    |
-| `OPENROUTER_API_KEY` | OpenRouter  | overflow / last resort                 |
+| `SAMBANOVA_API_KEY`  | SambaNova   | reliable-JSON fallback (summarize/reasoning) |
+| `MISTRAL_API_KEY`    | Mistral     | reasoning / overflow fallback          |
 | `TAVILY_API_KEY`     | Tavily      | primary search                         |
 | `SERPER_API_KEY`     | Serper      | secondary search fallback              |
 

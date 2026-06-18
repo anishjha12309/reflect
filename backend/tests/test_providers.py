@@ -18,7 +18,7 @@ def _client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-# --- OpenAI-compatible providers (Cerebras/Groq/OpenRouter share this code) ---
+# --- OpenAI-compatible providers (Cerebras/Groq/SambaNova/Mistral share this code) ---
 
 
 async def test_openai_compat_happy_path() -> None:

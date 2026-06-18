@@ -33,20 +33,22 @@ log = structlog.get_logger(__name__)
 # Ordered fallback policy per task type (CLAUDE.md §4). The first viable provider
 # (passing context / breaker / quota filters) is tried first, then the rest in order.
 #
-# NOTE: "short" (summarize) needs a provider that reliably emits the required JSON.
-# Cerebras' free tier is reasoning-only (gpt-oss/glm) and OpenRouter's free models are
-# now reasoning models too — both routinely fail json_mode schema validation, which
-# starves the summarizer of notes. Groq's instruct model (Llama 3.3 70B) is the reliable
-# JSON worker, so it stays as the fallback AFTER the fast Cerebras attempt. On healthy
-# quota these summarize calls succeed, so they don't trip Groq's breaker and starve the
-# critic — the earlier starvation came from 429-drained Groq, not from healthy use.
-# OpenRouter's slow reasoning model is dropped from "short": it can't do the JSON job and
-# only adds latency before failing over.
+# "short" (summarize): fast + reliable JSON. Cerebras leads (fastest throughput),
+# then SambaNova/Mistral (both verified to emit clean JSON), Groq last (6K TPM is
+# poor for bursty summarize fan-out).
+#
+# "reasoning" (planner, critic): strong reasoning + clean JSON. Groq Llama-3.3 leads,
+# SambaNova/Mistral back it up, Gemini is last resort (lowest RPD, reserve for synthesis).
+#
+# "long_synthesis": needs long context. Gemini leads (up to 1M tokens), then Mistral
+# (32K), then SambaNova (16K).
+#
+# "overflow": Mistral → SambaNova → Groq as a general escape valve.
 DEFAULT_POLICY: dict[TaskType, tuple[str, ...]] = {
-    "short": ("cerebras", "groq"),
-    "reasoning": ("groq", "openrouter", "gemini"),
-    "long_synthesis": ("gemini", "openrouter"),
-    "overflow": ("openrouter", "groq"),
+    "short": ("cerebras", "sambanova", "mistral", "groq"),
+    "reasoning": ("groq", "sambanova", "mistral", "gemini"),
+    "long_synthesis": ("gemini", "mistral", "sambanova"),
+    "overflow": ("mistral", "sambanova", "groq"),
 }
 
 _JSON_ONLY_REMINDER = Message(
@@ -111,13 +113,14 @@ class CircuitBreaker:
 
 
 class TokenBucket:
-    """Per-provider rate limiter (requests/minute) as a refilling token bucket.
+    """Per-provider rate limiter as a refilling token bucket.
 
-    `try_acquire()` is non-blocking: it returns immediately with True when a token is
-    available (so we never wait under normal load — the router just calls the provider)
-    and False when the provider is momentarily at its limit (so the router fails over to
-    another provider instead of eating a 429). Single-threaded asyncio means the
-    check-and-decrement is atomic — no lock needed.
+    Can limit any configurable resource per minute — requests (RPM) or tokens (TPM).
+    `try_acquire(amount)` is non-blocking: it returns immediately with True when the
+    requested amount is available (so we never wait under normal load — the router just
+    calls the provider) and False when the provider is momentarily at its limit (so the
+    router fails over to another provider instead of eating a 429). Single-threaded asyncio
+    means the check-and-decrement is atomic — no lock needed.
     """
 
     def __init__(self, rate_per_min: float, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -127,23 +130,30 @@ class TokenBucket:
         self._clock = clock
         self._updated = clock()
 
+    @property
+    def capacity(self) -> float:
+        """Maximum resource units this bucket can hold (= rate_per_min * safety factor)."""
+        return self._capacity
+
     def _refill(self) -> None:
         now = self._clock()
         self._tokens = min(self._capacity, self._tokens + (now - self._updated) * self._refill_per_sec)
         self._updated = now
 
-    def try_acquire(self) -> bool:
+    def try_acquire(self, amount: float = 1.0) -> bool:
+        """Try to consume `amount` units. Returns True and debits on success, False if insufficient."""
         self._refill()
-        if self._tokens >= 1.0:
-            self._tokens -= 1.0
+        if self._tokens >= amount:
+            self._tokens -= amount
             return True
         return False
 
-    def time_until_token(self) -> float:
+    def time_until(self, amount: float = 1.0) -> float:
+        """Seconds until `amount` units will be available (0.0 if available now)."""
         self._refill()
-        if self._tokens >= 1.0:
+        if self._tokens >= amount:
             return 0.0
-        return (1.0 - self._tokens) / self._refill_per_sec
+        return (amount - self._tokens) / self._refill_per_sec
 
 
 class LLMRouter:
@@ -180,10 +190,19 @@ class LLMRouter:
         # Per-provider request-rate throttle, sized at a safety fraction of each
         # provider's free-tier RPM so we self-pace instead of discovering the limit
         # via 429s. Providers with no declared RPM are left unthrottled.
+        # A parallel token-rate limiter (self._token_limiters) enforces per-minute token
+        # budgets (TPM) so bursty summarize fan-outs never discover Groq's 6K TPM via 429s.
         self._limiters: dict[str, TokenBucket] = {
             name: TokenBucket(max(1.0, p.capabilities.rpm * rpm_safety), clock=clock)
             for name, p in providers.items()
             if p.capabilities.rpm
+        }
+        # Per-provider token-rate throttle (TPM). Only created for providers with a declared
+        # tpm; providers without tpm are treated as token-unlimited (e.g. Cerebras, SambaNova).
+        self._token_limiters: dict[str, TokenBucket] = {
+            name: TokenBucket(max(1.0, p.capabilities.tpm * rpm_safety), clock=clock)
+            for name, p in providers.items()
+            if p.capabilities.tpm
         }
 
     def pick(self, task_type: TaskType, needed_context_tokens: int) -> list[str]:
@@ -232,13 +251,33 @@ class LLMRouter:
                 breaker = self._breakers[name]
                 if not breaker.allow():
                     continue
-                limiter = self._limiters.get(name)
-                if limiter is not None and not limiter.try_acquire():
-                    # At its RPM right now → skip to a provider with capacity (fail over
-                    # to speed, not a 429). Remember when it would free up.
-                    wait = limiter.time_until_token()
+                rpm_limiter = self._limiters.get(name)
+                tok_limiter = self._token_limiters.get(name)
+
+                # Over-capacity check: if this single call needs more tokens than the
+                # provider's entire TPM bucket can ever hold, skip it permanently rather
+                # than pacing forever waiting for capacity that can never arrive.
+                if tok_limiter is not None and needed > tok_limiter.capacity:
+                    continue
+
+                # Peek at both limiters (refill is idempotent, no state change yet).
+                # Single-threaded asyncio: no await between peek and acquire, so the
+                # refilled state is consistent — this is the atomic peek-then-acquire.
+                rpm_wait = rpm_limiter.time_until(1.0) if rpm_limiter else 0.0
+                tok_wait = tok_limiter.time_until(needed) if tok_limiter else 0.0
+
+                if rpm_wait > 0 or tok_wait > 0:
+                    # At its RPM or TPM right now → skip to a provider with capacity
+                    # (fail over for speed, not a 429). Remember the soonest refill time.
+                    wait = max(rpm_wait, tok_wait)
                     soonest_token = wait if soonest_token is None else min(soonest_token, wait)
                     continue
+
+                # Both limiters have headroom — debit them now, then call the provider.
+                if rpm_limiter:
+                    rpm_limiter.try_acquire(1.0)
+                if tok_limiter:
+                    tok_limiter.try_acquire(needed)
                 called_any = True
                 try:
                     result = await self._call(provider, messages, max_tokens, json_mode, schema)
@@ -331,13 +370,15 @@ def build_router_from_env() -> LLMRouter:
     from .providers.cerebras import CerebrasProvider
     from .providers.gemini import GeminiProvider
     from .providers.groq import GroqProvider
-    from .providers.openrouter import OpenRouterProvider
+    from .providers.mistral import MistralProvider
+    from .providers.sambanova import SambaNovaProvider
 
     spec: list[tuple[str, str, type]] = [
         ("cerebras", "CEREBRAS_API_KEY", CerebrasProvider),
         ("groq", "GROQ_API_KEY", GroqProvider),
         ("gemini", "GEMINI_API_KEY", GeminiProvider),
-        ("openrouter", "OPENROUTER_API_KEY", OpenRouterProvider),
+        ("sambanova", "SAMBANOVA_API_KEY", SambaNovaProvider),
+        ("mistral", "MISTRAL_API_KEY", MistralProvider),
     ]
     providers: dict[str, LLMProvider] = {}
     for name, env_key, cls in spec:
