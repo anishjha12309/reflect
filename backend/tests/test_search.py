@@ -260,6 +260,22 @@ async def test_openalex_prefers_open_access_url() -> None:
     assert out[0].url == "https://repo.edu/paper.pdf"  # OA url beats DOI
 
 
+async def test_openalex_strips_wildcard_chars_from_query() -> None:
+    # OpenAlex 400s on ? and * (wildcards) in the default search; our natural-language
+    # questions end in "?", so they must be stripped before the request goes out.
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["search"] = request.url.params.get("search", "")
+        return httpx.Response(200, json={"results": []})
+
+    provider = OpenAlexProvider(client=_client(handler))
+    await provider.search("nuclear vs solar trade-offs? best*", k=5)
+    assert "?" not in captured["search"]
+    assert "*" not in captured["search"]
+    assert "nuclear vs solar" in captured["search"]
+
+
 def test_build_search_puts_openalex_first() -> None:
     facade = build_search_from_env()
     assert facade._providers[0].name == "openalex"

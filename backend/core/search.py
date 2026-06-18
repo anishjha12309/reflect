@@ -181,8 +181,12 @@ class OpenAlexProvider(SearchProvider):
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
 
     async def search(self, query: str, k: int) -> list[SearchResult]:
+        # OpenAlex treats ? and * as wildcards and returns HTTP 400 on them in its
+        # default (stemmed) search. Our queries are natural-language questions, so strip
+        # those characters before sending.
+        safe_query = query.replace("?", " ").replace("*", " ").strip()
         params: dict[str, Any] = {
-            "search": query,
+            "search": safe_query,
             "per_page": min(max(k * 2, k), 25),  # over-fetch; many works lack abstracts
             "sort": "relevance_score:desc",
         }
