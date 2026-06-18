@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from core.search import (
+    OpenAlexProvider,
     SearchFacade,
     SearchProvider,
     SearchProviderError,
@@ -16,6 +17,7 @@ from core.search import (
     SearxngProvider,
     SerperProvider,
     TavilyProvider,
+    build_search_from_env,
 )
 
 
@@ -188,3 +190,76 @@ async def test_searxng_provider_parses_json() -> None:
     out = await provider.search("q", k=5)
     assert out[0].url == "https://s.com"
     assert out[0].score == 0.3
+
+
+# --- OpenAlex (scholarly, abstract-as-content) ------------------------------
+
+
+async def test_openalex_reconstructs_abstract_and_carries_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.openalex.org"
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Nuclear vs Solar",
+                        "doi": "https://doi.org/10.1/abc",
+                        "cited_by_count": 42,
+                        # inverted index, intentionally out of order
+                        "abstract_inverted_index": {"beats": [1], "Solar": [0], "coal": [2]},
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAlexProvider(client=_client(handler))
+    out = await provider.search("q", k=5)
+    assert len(out) == 1
+    assert out[0].title == "Nuclear vs Solar"
+    assert out[0].content == "Solar beats coal"  # rebuilt in position order
+    assert out[0].url == "https://doi.org/10.1/abc"  # DOI used for citation
+    assert out[0].score == 42.0  # cited_by_count
+
+
+async def test_openalex_skips_works_without_abstract() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "no abstract", "abstract_inverted_index": None, "doi": "https://doi.org/10.1/x"},
+                    {"title": "ok", "abstract_inverted_index": {"hello": [0]}, "doi": "https://doi.org/10.1/y"},
+                ]
+            },
+        )
+
+    provider = OpenAlexProvider(client=_client(handler))
+    out = await provider.search("q", k=5)
+    assert [r.title for r in out] == ["ok"]  # the abstract-less work is dropped
+
+
+async def test_openalex_prefers_open_access_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "OA paper",
+                        "doi": "https://doi.org/10.1/z",
+                        "open_access": {"oa_url": "https://repo.edu/paper.pdf"},
+                        "abstract_inverted_index": {"open": [0]},
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAlexProvider(client=_client(handler))
+    out = await provider.search("q", k=5)
+    assert out[0].url == "https://repo.edu/paper.pdf"  # OA url beats DOI
+
+
+def test_build_search_puts_openalex_first() -> None:
+    facade = build_search_from_env()
+    assert facade._providers[0].name == "openalex"

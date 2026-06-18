@@ -30,6 +30,9 @@ class SearchResult(BaseModel):
     url: str
     snippet: str
     score: float = 0.0
+    # Full source text already in hand (e.g. an OpenAlex abstract). When present the
+    # reader uses it directly and skips the HTTP fetch — dodging paywalls and PDFs.
+    content: str = ""
 
 
 # --- error taxonomy (mirrors the provider layer) ---------------------------
@@ -153,6 +156,85 @@ class SearxngProvider(SearchProvider):
         return [r for r in results if r is not None][:k]
 
 
+class OpenAlexProvider(SearchProvider):
+    """Scholarly search over OpenAlex (https://openalex.org) — free, no API key.
+
+    Returns peer-reviewed / academic works and carries each work's ABSTRACT as
+    `content`, so the reader uses it directly and skips the HTTP fetch. That both
+    dodges paywalls/PDFs (the usual reason good academic sources get dropped) and
+    biases the corpus toward research instead of SEO / marketing pages. Placed FIRST
+    in the chain so scholarly sources win; Tavily/Serper remain as open-web fallbacks.
+    """
+
+    name = "openalex"
+    url = "https://api.openalex.org/works"
+
+    def __init__(
+        self,
+        *,
+        mailto: str | None = None,
+        api_key: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._mailto = mailto  # "polite pool" (faster, more reliable) — recommended
+        self._api_key = api_key  # optional OpenAlex premium key
+        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
+
+    async def search(self, query: str, k: int) -> list[SearchResult]:
+        params: dict[str, Any] = {
+            "search": query,
+            "per_page": min(max(k * 2, k), 25),  # over-fetch; many works lack abstracts
+            "sort": "relevance_score:desc",
+        }
+        if self._mailto:
+            params["mailto"] = self._mailto
+        if self._api_key:
+            params["api_key"] = self._api_key
+        try:
+            resp = await self._client.get(self.url, params=params)
+        except httpx.HTTPError as exc:
+            raise SearchProviderError(f"openalex: transport error: {exc}") from exc
+        _raise_for_status("openalex", resp)
+
+        out: list[SearchResult] = []
+        for work in resp.json().get("results", []) or []:
+            abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
+            if not abstract:
+                continue  # no abstract → no usable content for us; skip
+            out.append(
+                SearchResult(
+                    title=work.get("title") or work.get("display_name") or "",
+                    url=_openalex_url(work),
+                    snippet=abstract[:300],
+                    content=abstract,
+                    score=float(work.get("cited_by_count", 0) or 0),
+                )
+            )
+            if len(out) >= k:
+                break
+        return out
+
+
+def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
+    """OpenAlex stores abstracts as an inverted index {word: [positions]}; rebuild text."""
+    if not inverted_index:
+        return ""
+    positioned = sorted(
+        (pos, word) for word, positions in inverted_index.items() for pos in positions
+    )
+    return " ".join(word for _, word in positioned)
+
+
+def _openalex_url(work: dict[str, Any]) -> str:
+    """Best citation URL: open-access landing/PDF → DOI → OpenAlex work id."""
+    oa = work.get("open_access") or {}
+    if oa.get("oa_url"):
+        return oa["oa_url"]
+    if work.get("doi"):
+        return work["doi"]  # OpenAlex returns a full https://doi.org/... URL
+    return work.get("id", "")
+
+
 # --- facade -----------------------------------------------------------------
 
 
@@ -194,14 +276,22 @@ class SearchFacade:
 
 
 def build_search_from_env(*, cache: SemanticCache | None = None) -> SearchFacade:
-    """Build the chain from whatever providers are configured, in policy order."""
-    providers: list[SearchProvider] = []
+    """Build the chain from whatever providers are configured, in policy order.
+
+    OpenAlex (scholarly, keyless) leads so research papers win over SEO pages; Tavily
+    → Serper → SearXNG follow as open-web fallbacks. OPENALEX_MAILTO (your email) opts
+    into OpenAlex's faster "polite pool"; OPENALEX_API_KEY is optional (premium).
+    """
+    providers: list[SearchProvider] = [
+        OpenAlexProvider(
+            mailto=os.environ.get("OPENALEX_MAILTO"),
+            api_key=os.environ.get("OPENALEX_API_KEY"),
+        )
+    ]
     if (key := os.environ.get("TAVILY_API_KEY")):
         providers.append(TavilyProvider(key))
     if (key := os.environ.get("SERPER_API_KEY")):
         providers.append(SerperProvider(key))
     if (url := os.environ.get("SEARXNG_URL")):
         providers.append(SearxngProvider(url))
-    if not providers:
-        log.warning("no_search_providers_configured")
     return SearchFacade(providers, cache=cache)

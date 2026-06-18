@@ -134,7 +134,8 @@ State is serializable; no live objects (sockets, clients) stored in state.
 
 | Provider                          | Free limits                                                   | Role                                          |
 | --------------------------------- | ------------------------------------------------------------- | --------------------------------------------- |
-| **Tavily**                        | 1,000 credits/month, LangChain-native, LLM-optimized results  | **primary** search                            |
+| **OpenAlex**                      | free, **no key** (add `OPENALEX_MAILTO` for the polite pool)  | **primary — scholarly.** Returns papers + abstracts (used as source text directly, so it skips the fetch and dodges paywalls). Biases the corpus toward research, not SEO pages. |
+| **Tavily**                        | 1,000 credits/month, LangChain-native, LLM-optimized results  | open-web fallback                             |
 | **Serper**                        | ~2,500 free queries (treat as one-time pool), raw Google SERP | secondary fallback                            |
 | **SearXNG (self-host in Docker)** | unlimited, runs locally/in-container                          | **final fallback / dev** — truly $0, no quota |
 | ~~Brave~~                         | ❌ removed free tier Feb 2026, needs a card                   | **DO NOT USE**                                |

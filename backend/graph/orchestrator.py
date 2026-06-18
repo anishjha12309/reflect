@@ -30,11 +30,16 @@ from agents.reader import Reader, SourceDocument
 from agents.summarizer import Summarizer
 from core.llm_router import LLMRouter
 from core.providers.base import AllProvidersExhausted, Message, estimate_tokens
-from core.search import SearchFacade, SearchUnavailable
+from core.search import SearchFacade, SearchResult, SearchUnavailable
 
 from .state import Event, RawSource, ResearchState, TaskState
 
 log = structlog.get_logger(__name__)
+
+# A search result whose carried text (e.g. an OpenAlex abstract) is at least this many
+# tokens is used directly as a source; shorter than this isn't worth a source slot.
+_MIN_DIRECT_CONTENT_TOKENS = 40
+_DIRECT_CONTENT_MAX_TOKENS = 4000  # cap on directly-used content (matches Reader budget)
 
 _SYNTH_SYSTEM = (
     "You are a research synthesizer. Using ONLY the provided NOTES, write a clear, "
@@ -229,12 +234,24 @@ class Orchestrator:
             query = _reformulate(task.question, attempt)
         return []
 
-    async def _read_results(self, results, sem: asyncio.Semaphore) -> list[SourceDocument]:
-        async def read_one(url: str) -> SourceDocument | None:
+    async def _read_results(
+        self, results: list[SearchResult], sem: asyncio.Semaphore
+    ) -> list[SourceDocument]:
+        async def read_one(result: SearchResult) -> SourceDocument | None:
+            # Results that already carry their text (OpenAlex abstracts) are used
+            # directly — no HTTP fetch, so paywalls/PDFs can't drop a good source.
+            if result.content and estimate_tokens(result.content) >= _MIN_DIRECT_CONTENT_TOKENS:
+                text = result.content[: _DIRECT_CONTENT_MAX_TOKENS * 4]
+                return SourceDocument(
+                    url=result.url,
+                    title=result.title or None,
+                    text=text,
+                    tokens=estimate_tokens(text),
+                )
             async with sem:
-                return await self._reader.read(url)
+                return await self._reader.read(result.url)
 
-        docs = await asyncio.gather(*(read_one(r.url) for r in results[: self._read_k]))
+        docs = await asyncio.gather(*(read_one(r) for r in results[: self._read_k]))
         return [d for d in docs if d is not None]
 
     async def _summarize_node(self, state: ResearchState) -> dict:
