@@ -5,7 +5,7 @@ import Link from "next/link";
 const CAPABILITIES: { title: string; body: string; href: string; cta: string }[] = [
   {
     title: "Rate-limit-aware LLM gateway",
-    body: "Every call is routed by task type, required context window, and live remaining quota — failing over on 429/5xx with exponential backoff and a per-provider circuit breaker.",
+    body: "Every call is routed by task type, required context window, and live remaining quota — with token-per-minute (TPM)-aware failover that skips a provider before it 429s, exponential backoff, and a per-provider circuit breaker.",
     href: "/metrics",
     cta: "See live quota",
   },

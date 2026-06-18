@@ -13,6 +13,8 @@
 
 Drop a research topic. Reflect decomposes it into a dependency graph of sub-questions, fans them out in parallel across free-tier search and LLM providers, synthesizes a fully-cited report in real time, and then runs a critic agent to detect coverage gaps and contradictions — triggering a bounded second research round when the draft falls short.
 
+Search is scholarly-first: OpenAlex (free, no key, unlimited) is the primary provider, using peer-reviewed paper abstracts directly — bypassing paywalls and biasing the corpus toward research rather than SEO pages. Tavily, Serper, and self-hosted SearXNG serve as open-web fallbacks.
+
 No credit card. No paid API tier. No single point of failure.
 
 ---
@@ -49,6 +51,7 @@ Every LLM call goes through `core/llm_router.py` — never directly to a provide
 - **429 / 5xx failover with exponential backoff.** On a recoverable error the router tries the next viable provider in the policy chain. Only when the entire chain has been attempted does it back off and retry, up to a capped `max_retries` (default 3).
 - **Per-provider circuit breaker** (closed → open → half-open). Opens after N consecutive failures (default 3). Enters half-open after a cooldown window (default 30 seconds). Recovers on a successful probe. Keeps flaky providers out of the hot path without permanently dropping them.
 - **Per-provider RPM token bucket.** The router self-paces to stay within each provider's free-tier requests-per-minute limit. When a provider is momentarily at its RPM, the router fails over to one with capacity — avoiding 429s proactively, not reactively.
+- **Token-per-minute (TPM)-aware failover.** In addition to request-rate tracking, the router models tokens per minute. Before issuing a call it checks whether the estimated prompt + completion tokens fit inside the provider's remaining TPM window. If not, the router skips that provider entirely (no call made, no 429 incurred) and tries the next chain member that has token headroom. A call whose token cost exceeds a provider's entire TPM budget is never routed there regardless of RPM availability. This is what keeps Groq's 6 K TPM limit from producing 429 storms on large prompts.
 - **Malformed JSON guard.** If a provider returns unparseable JSON against a Pydantic schema, the router retries once with an explicit "respond with JSON only" reminder on the same provider, then fails over to the next if the second attempt also fails.
 - **Quota ledger.** Every call — success and failure — is recorded in a SQLite database. Providers that have hit their daily request or token cap are excluded from `pick()` for the rest of the day. A `GET /metrics` endpoint exposes per-provider usage to the frontend.
 
@@ -84,6 +87,7 @@ If the coverage score is below threshold (default 0.7) and the current round is 
 | Multi-provider LLM gateway | Cerebras, Groq, Gemini, SambaNova, Mistral — all free tiers, uniform interface |
 | Circuit breaker per provider | Closed → Open → Half-open, tunable threshold and cooldown |
 | RPM token-bucket throttle | Self-paces to stay under free-tier RPM limits; fails over instead of 429-ing |
+| TPM-aware failover | Checks token-per-minute headroom before every call; skips providers with insufficient TPM capacity; prevents Groq 6 K TPM storms |
 | Pre-flight context overflow guard | Never sends oversized prompts; reroutes before the API call |
 | Malformed JSON retry and failover | One in-provider retry with JSON-only reminder, then cross-provider failover |
 | SQLite quota ledger | Records every call; gates exhausted providers; exposed via `/metrics` |
@@ -91,7 +95,7 @@ If the coverage score is below threshold (default 0.7) and the current round is 
 | Semantic dedup cache | Cosine-similarity threshold 0.92; SQLite-backed; degrades to exact-match on embedding failure |
 | Reflection critic loop | Coverage scoring, contradiction detection, bounded follow-up rounds |
 | HITL plan approval | Optional LangGraph `interrupt` before search begins |
-| Search fallback chain | Tavily → Serper → SearXNG (self-hosted, unlimited) |
+| Scholarly-first search | OpenAlex (free, keyless) is primary — uses paper abstracts directly, dodging paywalls; Tavily → Serper → SearXNG as open-web fallbacks |
 | Page reader | `trafilatura` extraction; paywall/timeout/non-HTML skip; token-budget truncation |
 | Map-reduce synthesis | Splits notes into chunks when they exceed the synthesis token budget |
 | SSE streaming | Typed events: `plan_ready`, `task_done`, `notes_ready`, `draft_ready`, `critic_verdict`, `quota_update`, `report_chunk`, `done`, `error` |
@@ -113,8 +117,8 @@ If the coverage score is below threshold (default 0.7) and the current round is 
         ┌──────────────┬──────────────────┼───────────────┬───────────────┐
         ▼              ▼                   ▼               ▼               ▼
    Planner Agent   Search Agent      Reader Agent    Summarizer      Critic Agent
-   (decompose →    (Tavily/Serper/   (fetch + clean  (per-source     (gap + conflict
-    task DAG +      SearXNG, with     page text,      structured       detection →
+   (decompose →    (OpenAlex/Tavily  (fetch + clean  (per-source     (gap + conflict
+    task DAG +      /Serper/SearXNG,  page text,      structured       detection →
     HITL approve)   fallback chain)   dedup cache)    notes)           re-search?)
         │              │                   │               │               │
         └──────────────┴─────────► all go through ◄────────┴───────────────┘
@@ -149,11 +153,11 @@ flowchart TD
 | Agent | LLM task type | Responsibility |
 |---|---|---|
 | **Planner** | `reasoning` (Groq) | Decomposes topic into 3–7 sub-questions with dependency IDs. Validates the DAG (cycle detection via DFS coloring, dangling-dep check). Falls back to a flat single-task plan on any failure. |
-| **Search** | none (no LLM) | Queries Tavily → Serper → SearXNG for each sub-question. Returns ranked `SearchResult` objects (URL + snippet + score). |
+| **Search** | none (no LLM) | Queries OpenAlex first (scholarly papers via abstract, no key required), then Tavily → Serper → SearXNG for open-web results. Returns ranked `SearchResult` objects (URL + snippet + score). OpenAlex hits skip the Reader HTTP fetch — the abstract is used directly as source text. |
 | **Reader** | none (no LLM) | Fetches URLs with `httpx`, extracts main text via `trafilatura`, truncates to a token budget. Skips timeouts, paywalls (401/402/403), non-HTML content types, and empty extractions. |
 | **Summarizer** | `short` (Cerebras) | Converts a `SourceDocument` into structured `Note` objects (claim + evidence). Chunks long documents. Wraps page text in `<source>` markers to prevent prompt injection. |
 | **Synthesizer** | `long_synthesis` (Gemini) | Merges all notes into a sectioned report with `[n]` inline citations and a sources table. Uses map-reduce when notes exceed the synthesis token budget (24K tokens default). |
-| **Critic** | `reasoning` (Groq) | Scores coverage (0.0–1.0), lists cross-source contradictions, proposes follow-up questions. Auto-approves if the critic's own LLM call fails, so the pipeline always terminates. |
+| **Critic** | `reasoning` (Groq) | Scores coverage (0.0–1.0), lists cross-source contradictions, proposes follow-up questions. If all reasoning providers are exhausted, emits an explicit `unavailable` state (rather than a misleading 0.0 score) and the orchestrator treats it as auto-approved. |
 
 ### ResearchState fields
 
@@ -188,7 +192,7 @@ flowchart TD
 
 **Step 4 — `fan_out_search` node.** The DAG is processed in waves. In each wave, all currently-ready tasks (dependencies satisfied) are searched and read concurrently behind a semaphore (concurrency = 4 by default):
 
-- Search: Tavily → Serper → SearXNG fallback chain; semantic cache checked first.
+- Search: OpenAlex (scholarly abstracts, no key) → Tavily → Serper → SearXNG fallback chain; semantic cache checked first. OpenAlex results use the paper abstract as source text, bypassing the HTTP reader step for those sources.
 - Read: `httpx` fetch + `trafilatura` extraction; URL-level cache. Timeouts, paywalls, non-HTML, and empty extractions are silently skipped.
 - Zero usable sources for a sub-question triggers bounded query reformulation (up to 1 deterministic variant), then the task is marked `empty`.
 - A `task_done` or `task_empty` event streams per task.
@@ -238,11 +242,12 @@ Providers are excluded from the chain if: their `max_context` is smaller than th
 
 | Provider | Free Limits | Role | Env var |
 |---|---|---|---|
-| **Tavily** | 1,000 credits/month | Primary — LLM-optimized results | `TAVILY_API_KEY` |
-| **Serper** | ~2,500 free queries (one-time pool) | Secondary fallback — raw Google SERP | `SERPER_API_KEY` |
+| **OpenAlex** | Unlimited, no key | **Primary (scholarly)** — peer-reviewed papers; uses abstract as source text directly, bypassing HTTP fetch and paywalls; biases corpus toward research over SEO | `OPENALEX_MAILTO` (optional — sets the polite-pool email for faster responses) |
+| **Tavily** | 1,000 credits/month | Open-web fallback — LLM-optimized results | `TAVILY_API_KEY` |
+| **Serper** | ~2,500 free queries (one-time pool) | Second fallback — raw Google SERP | `SERPER_API_KEY` |
 | **SearXNG (self-hosted)** | Unlimited | Final fallback / local dev — truly $0, no quota | `SEARXNG_URL` |
 
-The search facade tries providers in order. On any `SearchProviderError` (including 429) it falls through to the next. Only `SearchUnavailable` (all providers failed) reaches the orchestrator, which marks the run partial rather than crashing.
+The search facade tries providers in order: OpenAlex first for scholarly coverage, then open-web providers. On any `SearchProviderError` (including 429) it falls through to the next. Only `SearchUnavailable` (all providers failed) reaches the orchestrator, which marks the run partial rather than crashing.
 
 **Page extraction:** trafilatura (free, local). No external API call required.
 
@@ -303,10 +308,10 @@ reflect/
 │   ├── app.py                     # FastAPI entry: GET /health, GET /metrics, POST /research (SSE)
 │   │
 │   ├── core/
-│   │   ├── llm_router.py          # LLMRouter: pick(), complete(), circuit breakers, RPM throttle
+│   │   ├── llm_router.py          # LLMRouter: pick(), complete(), circuit breakers, RPM throttle, TPM-aware failover
 │   │   ├── quota.py               # QuotaLedger: SQLite call log, is_exhausted(), remaining()
 │   │   ├── cache.py               # SemanticCache: cosine-similarity dedup, SQLite-backed
-│   │   ├── search.py              # SearchFacade: Tavily -> Serper -> SearXNG fallback chain
+│   │   ├── search.py              # SearchFacade: OpenAlex (scholarly) -> Tavily -> Serper -> SearXNG fallback chain
 │   │   └── providers/
 │   │       ├── base.py            # LLMProvider ABC, Message, LLMResult, ProviderCapabilities, errors
 │   │       ├── openai_compat.py   # Shared OpenAI-API-compatible base (Cerebras, Groq, SambaNova, Mistral)
@@ -438,8 +443,9 @@ All tests mock external HTTP — no API keys required. The suite runs with `asyn
 | `GEMINI_API_KEY` | At least one LLM key required | Google AI Studio key. Also used for cache embeddings. |
 | `SAMBANOVA_API_KEY` | At least one LLM key required | SambaNova key (free tier, no card) |
 | `MISTRAL_API_KEY` | At least one LLM key required | Mistral key (free tier, no card) |
-| `TAVILY_API_KEY` | At least one search key required | Tavily (1,000 credits/month free) |
-| `SERPER_API_KEY` | Optional | Serper (~2,500 free queries) |
+| `OPENALEX_MAILTO` | Optional (recommended) | Your email address. Sets the OpenAlex polite-pool header for faster, more reliable responses. No account or key required. |
+| `TAVILY_API_KEY` | Optional | Tavily (1,000 credits/month free) — open-web fallback after OpenAlex |
+| `SERPER_API_KEY` | Optional | Serper (~2,500 free queries) — second open-web fallback |
 | `SEARXNG_URL` | Optional | Self-hosted SearXNG base URL. Defaults to `http://localhost:8080`. Set automatically by `docker compose up`. |
 | `ALLOWED_ORIGINS` | Optional | Comma-separated CORS origins. Defaults to `http://localhost:3000`. Set to your Vercel URL in production. |
 | `QUOTA_DB_PATH` | Optional | Path for the quota SQLite file. Defaults to `$TMPDIR/reflect_quota.sqlite`. |
@@ -503,6 +509,7 @@ This is where Reflect earns its keep. Every failure mode below is handled in pro
 - **All providers return 429 or 5xx** — exponential backoff with jitter, up to `max_retries` (default 3). If still failing, `AllProvidersExhausted` is raised. The orchestrator catches this and produces a partial report.
 - **Circuit breaker trips** — after N consecutive failures (default 3), the provider is excluded from `pick()` for a cooldown period (default 30 seconds). After cooldown, a half-open state allows one probe call. Success closes the breaker; failure re-opens it immediately.
 - **RPM token bucket drained** — the router skips the throttled provider in favor of one with available capacity. If all viable providers are throttled, the router waits up to `max_throttle_wait` seconds for the soonest token to refill. This pacing is not counted as a retry failure.
+- **TPM budget exceeded** — before making a call, the router estimates total tokens (prompt + expected completion) and checks whether the provider has sufficient tokens-per-minute headroom. If not, that provider is skipped in favor of one with TPM capacity. A call larger than a provider's full TPM budget is never routed there, regardless of RPM availability. This prevents Groq's 6 K TPM limit from producing 429 bursts on large prompts.
 - **Daily quota exhausted** — the ledger's `is_exhausted()` gate excludes the provider from `pick()` for the rest of the day. The frontend quota strip shows which providers are tapped out.
 - **Context overflow (e.g. long prompt to Cerebras)** — the router's `pick()` filters out any provider whose `max_context` is smaller than the estimated prompt + completion tokens. The next provider in the chain is used without ever making the call.
 - **Malformed or truncated JSON** — on a Pydantic schema validation failure, the router resends the same messages with a "return JSON only" reminder to the same provider. If the second attempt also fails, the provider is treated as failed and the chain moves on.
@@ -514,7 +521,7 @@ This is where Reflect earns its keep. Every failure mode below is handled in pro
 <summary><strong>Search and reading failures</strong></summary>
 
 - **All search providers fail** — `SearchUnavailable` propagates to the orchestrator. The task is marked `empty` and `partial=True` is set on the state. A clearly marked partial report is produced from whatever sources exist.
-- **Single search provider fails** — the facade silently falls through to the next provider in the chain.
+- **Single search provider fails** — the facade silently falls through to the next provider in the chain (OpenAlex → Tavily → Serper → SearXNG).
 - **URL fetch timeout** (default 10 seconds) — the reader returns `None`, logs a skip, and the pipeline continues with other sources.
 - **Paywall (401, 402, 403)** — treated identically to a timeout skip.
 - **Non-HTML content type** — the reader checks the `Content-Type` response header; anything without `html` is skipped.
@@ -532,7 +539,7 @@ This is where Reflect earns its keep. Every failure mode below is handled in pro
 - **Planner LLM fails completely** — falls back to a minimal single-task plan: the topic itself as sub-question `q1`.
 - **Unbounded parallel fan-out** — the fan-out semaphore (default 4) ensures at most 4 concurrent search-and-read tasks, preventing burst requests into rate-limited providers.
 - **Synthesis exceeds token budget** — the synthesizer uses map-reduce: splits notes into groups within `synth_token_budget` (24K tokens default), synthesizes each group into a partial section, then merges the partials in one final call.
-- **Critic LLM call fails** — if the critic itself can't run, it auto-approves the draft (returns `approved=True`, `coverage_score=0.0`, empty lists). This ensures the pipeline always reaches `finalize`.
+- **Critic LLM call fails / all reasoning providers exhausted** — the critic emits an explicit `unavailable` state (not a misleading `coverage_score=0.0`) and the orchestrator treats it as auto-approved, so the pipeline always reaches `finalize` without falsely flagging the draft as low-coverage.
 - **Critic loop infinite re-search** — strictly bounded by `MAX_ROUNDS` (default 1 extra round). The routing function checks `state.round < self._max_rounds`.
 - **No notes after summarization** — the synthesizer produces a partial report with a clear warning header rather than passing an empty notes block to the synthesis LLM.
 
@@ -573,15 +580,15 @@ All tests are fully deterministic: no real HTTP calls, no API keys required. Ext
 |---|---|
 | `test_health.py` | `GET /health` returns `{"status": "ok"}` |
 | `test_api.py` | `POST /research` SSE stream with a fake orchestrator; disconnect handling; error event |
-| `test_router.py` | Happy path; 429 failover; all-exhausted backoff; Cerebras context-overflow exclusion; malformed JSON retry and failover; circuit breaker open/half-open/closed transitions; RPM token bucket; throttle-wait pacing without 429 |
+| `test_router.py` | Happy path; 429 failover; all-exhausted backoff; Cerebras context-overflow exclusion; malformed JSON retry and failover; circuit breaker open/half-open/closed transitions; RPM token bucket; TPM-headroom check skips provider; throttle-wait pacing without 429 |
 | `test_quota.py` | `record()`, `usage_today()`, `is_exhausted()`, `remaining()`, per-day isolation |
 | `test_cache.py` | Exact-text fast path; semantic near-duplicate hit; miss; embedding failure degrades gracefully |
-| `test_search.py` | Tavily primary; Serper fallback; SearXNG fallback; `SearchUnavailable` on all failure; cache hit |
+| `test_search.py` | OpenAlex primary (abstract direct-use, polite-pool header); Tavily fallback; Serper fallback; SearXNG fallback; `SearchUnavailable` on all failure; cache hit |
 | `test_providers.py` | HTTP layer for each provider (httpx mocked): successful parse, 429 raises `RateLimitError`, 5xx raises `ServerError`, null content raises `MalformedResponseError` |
 | `test_reader.py` | Timeout skip; paywall skip; non-HTML skip; empty extraction skip; cache hit; successful read and title extraction |
 | `test_planner.py` | Valid DAG output; cycle detection; dangling dependency detection; empty LLM output fallback; full LLM failure fallback |
 | `test_summarizer.py` | Note extraction; chunking for long documents; graceful chunk failure; prompt-injection delimiter present in messages |
-| `test_critic.py` | Coverage below threshold triggers loop; above threshold approves; max rounds gate; critic LLM failure auto-approves |
+| `test_critic.py` | Coverage below threshold triggers loop; above threshold approves; max rounds gate; critic LLM failure emits `unavailable` state and auto-approves; all-reasoning-providers-exhausted path |
 | `test_orchestrator.py` | End-to-end run with fake providers; partial-report degradation path; critic loop path |
 
 ---

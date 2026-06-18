@@ -46,11 +46,11 @@ function Arrow() {
 
 const AGENTS = [
   ["Planner", "Topic → sub-question DAG + HITL approval"],
-  ["Search", "Tavily → Serper → SearXNG fallback chain"],
-  ["Reader", "Fetch + clean (trafilatura) + dedup cache"],
+  ["Search", "OpenAlex (scholarly abstracts) → Tavily → Serper → SearXNG fallback chain"],
+  ["Reader", "Fetch + clean (trafilatura) + dedup cache; uses OpenAlex abstract directly when present"],
   ["Summarizer", "Per-source structured notes"],
   ["Synthesizer", "Long-context, cited report"],
-  ["Critic", "Gap + contradiction detection → re-search"],
+  ["Critic", "Gap + contradiction detection → re-search; surfaces honest 'unavailable' state when reasoning providers are exhausted"],
 ];
 
 const PROVIDERS = [
@@ -115,19 +115,26 @@ export default function ArchitecturePage() {
         <Layer label="Gateway" title="core/llm_router.py">
           <p className="text-sm text-muted">
             Provider selection by (task type, needed context, remaining quota), 429/5xx failover with
-            exponential backoff, a per-provider circuit breaker with half-open probes, and a token/quota
-            ledger persisted to SQLite. A pre-flight token count keeps oversize prompts off Cerebras&apos; 8K cap.
+            exponential backoff, a per-provider circuit breaker with half-open probes, token-per-minute
+            (TPM)-aware failover that skips providers lacking token headroom (e.g. Groq&apos;s 6K TPM) before
+            a 429 is ever triggered, and a token/quota ledger persisted to SQLite. A pre-flight token count
+            keeps oversize prompts off Cerebras&apos; 8K cap.
           </p>
         </Layer>
 
         <Arrow />
 
-        <Layer label="Providers" title="Five no-card free LLM tiers">
+        <Layer label="Providers" title="Five no-card free LLM tiers · four search sources">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {PROVIDERS.map(([t, s]) => (
               <Node key={t} title={t} sub={s} />
             ))}
           </div>
+          <p className="mt-4 text-sm text-muted">
+            Search: <span className="text-fg">OpenAlex</span> (scholarly primary — peer-reviewed abstracts, no key, paywall-dodging) →{" "}
+            <span className="text-fg">Tavily</span> → <span className="text-fg">Serper</span> → <span className="text-fg">SearXNG</span>{" "}
+            (unlimited self-hosted fallback). All no-card, $0.
+          </p>
         </Layer>
       </div>
 

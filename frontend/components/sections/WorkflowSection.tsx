@@ -9,12 +9,12 @@ const STEPS: { n: string; agent: string; role: string }[] = [
   {
     n: "02",
     agent: "Search",
-    role: "Queries each leaf sub-question across a Tavily → Serper → SearXNG fallback chain for ranked sources.",
+    role: "Queries each leaf sub-question starting with OpenAlex for peer-reviewed abstracts (no key, paywall-safe), then falls back to Tavily → Serper → SearXNG for open-web sources.",
   },
   {
     n: "03",
     agent: "Reader",
-    role: "Fetches and cleans page text with trafilatura, deduping against a semantic cache to conserve free-tier quota.",
+    role: "Uses OpenAlex abstracts directly when available; otherwise fetches and cleans page text with trafilatura. Near-duplicate sources are caught by the semantic cache before hitting any provider.",
   },
   {
     n: "04",

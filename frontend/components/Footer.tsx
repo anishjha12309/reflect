@@ -28,6 +28,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Search & Tooling",
     links: [
+      { label: "OpenAlex", href: "https://openalex.org", external: true },
       { label: "Tavily", href: "https://tavily.com", external: true },
       { label: "Serper", href: "https://serper.dev", external: true },
       { label: "SearXNG", href: "https://docs.searxng.org", external: true },
